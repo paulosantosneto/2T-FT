@@ -1,17 +1,21 @@
 import os
 import argparse
-from datasets import load_dataset, DatasetDict
+import json
+from datasets import load_dataset, DatasetDict, Dataset
 from typing import List, Dict, Optional, Union, Literal
 import matplotlib.pyplot as plt
-from .decoding import *
+from src import *
 from dataclasses import dataclass
+import re
+from tqdm import tqdm
+from dataclasses import dataclass, asdict
 
 def get_args():
     
     parser = argparse.ArgumentParser()
     
     # Global configurations
-    parser.add_argument('--choice', default='demo', choices=['demo', 'generate_dataset', 'finetuning'])
+    parser.add_argument('--choice', default='demo', choices=['demo', 'evaluating', 'finetuning'])
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--seed', default='123', type=int)
     parser.add_argument('--model', default='microsoft/phi-2', type=str)
@@ -29,8 +33,14 @@ def get_args():
 
     # [GENERATE DATASET]
 
-    parser.add_argument('--dataset', nargs='+', choices=['gsm8k', 'multiarith', 'svamp', 'last_letters', 'single_eq', 'addsub'])
+    parser.add_argument('--datasets', nargs='+', choices=['gsm8k', 'multiarith', 'svamp', 'last_letters', 'single_eq', 'addsub'])
+    parser.add_argument('--dataset_path', default='./dataset', type=str)
+    parser.add_argument('--log_path', default='./log', type=str)
+    parser.add_argument('--plot_path', default='./plot', type=str)
 
+    parser.add_argument('--save_log', action='store_true')
+    parser.add_argument('--save_plot', action='store_true')
+    
     # [FINE TUNING]
 
 
@@ -58,6 +68,10 @@ def print_output(prompt, cot_outputs, leco_outputs):
 
     print(leco_outputs)
 
+def concatenate_fields(example):
+    example['question'] = example['Body'] + '. ' + example['Question']
+    return example
+
 def load_datasets(datasets: List[str]):
 
     loaded_datasets = {}
@@ -67,17 +81,31 @@ def load_datasets(datasets: List[str]):
         if dataset_name == 'gsm8k':
             loaded_datasets['gsm8k'] = load_dataset('gsm8k', 'main')
         elif dataset_name == 'multiarith':
-            loaded_datasets['multiarith'] = load_dataset('ChilleD/MultiArith')
+            dataset = load_dataset('ChilleD/MultiArith')
+            dataset = dataset.rename_column('final_ans', 'answer')
+            loaded_datasets['multiarith'] = dataset
         elif dataset_name == 'svamp':
-            loaded_datasets['svamp'] = load_dataset('ChilleD/SVAMP')
+            dataset = load_dataset('ChilleD/SVAMP')
+            dataset = dataset.rename_column('Answer', 'answer')
+            dataset = dataset.map(concatenate_fields)
+            loaded_datasets['svamp'] = dataset
+
     
     return loaded_datasets
 
-def extract_cot_decoding_from_dataset(dataset: DatasetDict,
+def save_logs(log_outputs: Dict, dataset_name: str, log_path: str):
+
+    with open(f'{dataset_name}_cot_decoding.json', 'w') as f:
+        json.dump(log_outputs['cot_decoding'], f, indent=4)
+    
+    with open(f'{dataset_name}_leco_decoding.json', 'w') as f:
+        json.dump(log_outputs['leco*'], f, indent=4)
+
+def extract_cot_paths_from_dataset(dataset: DatasetDict,
                                       dataset_name: str,
                                       generator: GeneratePaths,
                                       cot_decoding: CoTDecoding,
-                                      divergence_decoding: LeCoDecoding,
+                                      leco_decoding: LeCoDecoding,
                                       max_samples: int,
                                       prompt_key: str,
                                       field: Optional[Literal['train', 'val', 'test']]):
@@ -94,9 +122,9 @@ def extract_cot_decoding_from_dataset(dataset: DatasetDict,
     
     for i, prompt in enumerate(tqdm(prompts, desc=dataset_name, total=len(prompts))):
         
-        topk_tokens, outputs = generator.search_cots(prompt, verbose=True)
+        topk_tokens, outputs = generator.search_cots(prompt)
         cot_paths = cot_decoding.calculate_score(prompt, topk_tokens, outputs)
-        diver_paths = divergence_decoding.calculate_score(prompt, topk_tokens, outputs)
+        diver_paths = leco_decoding.calculate_score(prompt, topk_tokens, outputs)
         
         log_outputs['cot_decoding'][i] = asdict(cot_paths)['paths']
         log_outputs['leco*'][i] = asdict(diver_paths)['paths']
@@ -160,28 +188,28 @@ def evaluating(log_outputs, ground_truth, pattern: str, num_paths: int, tokenize
         log_outputs = extract_exact_match(log_outputs, pattern)
         
         greedy_decoding_acc = exact_match(greedy_decoding(log_outputs['cot_decoding']), ground_truth)                       
-        cot_decoding_acc = exact_match(best_score(log_outputs['cot_decoding'], k=k), ground_truth)
-        self_consistency_acc = exact_match(self_consistency(log_outputs['cot_decoding'], k=k), ground_truth)
+        cot_decoding_max_acc = exact_match(best_score(log_outputs['cot_decoding'], k=k), ground_truth)
+        cot_decoding_agg_acc = exact_match(self_consistency(log_outputs['cot_decoding'], k=k), ground_truth)
         leco_acc = exact_match(best_score(log_outputs['leco*'], k=k), ground_truth)
         
         evaluations.append({'Greedy Decoding': greedy_decoding_acc,
-                            'CoT-Decoding': cot_decoding_acc,
-                            'LeCO*': leco_acc,
-                            'CoT-Decoding + Self-Consistency': self_consistency_acc})
+                            'CoT-Decoding (max)': cot_decoding_max_acc,
+                            'LeCo*': leco_acc,
+                            'CoT-Decoding (agg)': cot_decoding_agg_acc})
 
     return evaluations
 
-def print_evaluations(evaluations: List):
+def print_evaluations(evaluations: List, dataset_name: str):
     
-    print('--- Evaluation using Exact Match ---')
+    print(f'--- Evaluation using Exact Match for {dataset_name} ---')
     print(f'\tGreedy Decoding: {evaluations[-1]["Greedy Decoding"]:.4f}')
-    print(f'\tCoT-Decoding: {evaluations[-1]["CoT-Decoding"]:.4f}')
-    print(f'\tLeCO*: {evaluations[-1]["LeCO*"]:.4f}')
-    print(f'\tCoT-Decoding + Self-Consistency: {evaluations[-1]["CoT-Decoding + Self-Consistency"]:.4f}')
+    print(f'\tCoT-Decoding (max): {evaluations[-1]["CoT-Decoding (max)"]:.4f}')
+    print(f'\tLeCO*: {evaluations[-1]["LeCo*"]:.4f}')
+    print(f'\tCoT-Decoding (agg): {evaluations[-1]["CoT-Decoding (agg)"]:.4f}')
 
-def plot_k_paths(evaluations, title: str):
+def save_plot(evaluations: Dict, title: str, plot_path: str):
     
-    components = ['Greedy Decoding', 'CoT-Decoding', 'LeCO*', 'CoT-Decoding + Self-Consistency']
+    components = ['Greedy Decoding', 'CoT-Decoding (max)', 'LeCo*', 'CoT-Decoding (agg)']
     symbols = ['o', 's', '^', 'd']
     colors = [(0.4, 0.8, 0.4, 0.8), (0.4, 0.4, 0.8, 0.8), (0.8, 0.4, 0.4, 0.8), (0.8, 0.8, 0.4, 0.8)]  # RGBA format
 
@@ -199,5 +227,6 @@ def plot_k_paths(evaluations, title: str):
     
     plt.grid(True)
     plt.tight_layout()
-    plt.show()
+
+    plt.savefig(dataset + '.png')
     
