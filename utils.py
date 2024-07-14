@@ -32,7 +32,7 @@ def get_args():
     parser.add_argument('--bert', action='store_true')
     parser.add_argument('--add_shot', default='', type=str)
     parser.add_argument('--pattern', default=r'-?\d+\.?\d*', type=str)
-    parser.add_argument('--dtype', default='float16', type=str)
+    parser.add_argument('--dtype', default='float32', type=str)
     parser.add_argument('--max_model_len', default=2048, type=int)
     
     # [GENERATE DATASET]
