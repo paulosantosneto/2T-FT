@@ -93,7 +93,7 @@ class GeneratePaths():
     
     def format_prompt(self, raw_prompt: str) -> str:
         # Format the prompt to match the expected question-answer template.
-        return f'Q:{raw_prompt}(yes or no)\nA:{self.prompt}'
+        return f'Q:{raw_prompt}\nA:{self.prompt}'
 
 
 class LeCoDecoding():
