@@ -2,42 +2,60 @@ import torch
 import os
 import json
 import re
+import transformers
+import torch.nn as nn
 
 from peft import PeftModel
-from transformers import AutoModelForCausalLM
-from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, DataCollatorForLanguageModeling, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model
 from datasets import load_dataset, Dataset
+from dataclasses import dataclass, asdict, field
+from typing import List, Dict, Optional, Union, Literal
+from torch.utils.data import DataLoader, Dataset
 
 @dataclass
 class LORAConfig:
     rank: int = 8
     lora_alpha: int = 16
-    target_modules: List = ['q_proj', 'k_proj', 'v_proj', 'dense', 'fc1', 'fc2']
+    target_modules: List[str] = field(default_factory=lambda: ['q_proj', 'k_proj', 'v_proj', 'dense', 'fc1', 'fc2'])
     lora_dropout: float = 0.1
     bias: str = 'none'
-    task_type: str = 'CAUSAL_LM',
-    use_relora: bool = True
+    task_type: str = 'CAUSAL_LM'
+    use_rslora: bool = True
+
+@dataclass
+class TrainerConfig:
+    num_train_epochs: int = 1
+    per_device_train_batch_size: int = 1,
+    gradient_accumulation_steps: int = 4,
+    max_grad_norm: int = 1,
+    warmup_ratio: float = 0.1,
+    learning_rate: float = 1e-4,
+    fp16: bool = False,
+    group_by_length: bool = True,
+    lr_scheduler_type: str = 'cosine',
+    optim: str = 'paged_adamw_8bit',
+    report_to: str = 'none'
 
 class TextDataset(Dataset):
-    def __init__(self, encodings, question_lengths, answer_lengths):
+    def __init__(self, encodings, question_lengths, answer_lengths, tokenizer):
         self.encodings = encodings
         self.question_lengths = question_lengths
         self.answer_lengths = answer_lengths
+        self.tokenizer = tokenizer
         #print(self.question_lengths)
         
     def __getitem__(self, idx):
         item = {key: val[idx].clone().detach() for key, val in self.encodings.items()}
         
-        
         item['labels'] = item['input_ids'].clone()
-        item['labels'][0, :-1] = item['labels'].clone()[0, 1:]
-        item['labels'][0, -1] = tokenizer.eos_token_id
+
+        item['labels'][:-1] = item['labels'].clone()[1:]
+        item['labels'][-1] = self.tokenizer.eos_token_id
         
         item['loss_mask'] = torch.zeros_like(item['input_ids'])
-        item['loss_mask'][:, self.question_lengths[idx[0]] - 1] = 1
-        item['loss_mask'][:, self.question_lengths[idx[0]] + self.answer_lengths[idx[0]]] = 1
+        item['loss_mask'][self.question_lengths[idx] - 1] = 1
+        item['loss_mask'][self.question_lengths[idx] + self.answer_lengths[idx]] = 1
         
         return item
     
@@ -63,7 +81,7 @@ def prepare_dataset(dataset, tokenizer):
     question_lengths = [len(tokenizer.encode(data['question'], truncation=True, padding=False, max_length=512)) for data in formatted_dataset]
     answer_lengths = [len(tokenizer.encode(data['reasoning_text'], truncation=True, padding=False, max_length=512)) for data in formatted_dataset]
 
-    text_dataset = TextDataset(encodings, question_lengths, answer_lengths)
+    text_dataset = TextDataset(encodings, question_lengths, answer_lengths, tokenizer)
     
     return text_dataset
 
@@ -156,4 +174,33 @@ class CustomDataCollator:
             'loss_mask': loss_mask
         }
 
-data_collator = CustomDataCollator(tokenizer)
+def run_trainer(train_dataset, model, data_collator, args):
+
+    trainer_configs = TrainerConfig()
+
+    trainer = CustomTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        args=TrainingArguments(
+            num_train_epochs=1,
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=2,
+            max_grad_norm=1,
+            warmup_ratio=0.1,
+            learning_rate=1e-4,
+            fp16=trainer_configs.fp16,
+            logging_steps=args.logging_steps,
+            output_dir=args.output_ft,
+            optim='paged_adamw_8bit',
+            group_by_length=trainer_configs.group_by_length,
+            lr_scheduler_type='cosine',
+            report_to=trainer_configs.report_to,
+        ),
+        data_collator=data_collator,
+    )
+
+    model.config.use_cache = False
+
+    trainer.train()
+
+    return model, trainer.state.log_history

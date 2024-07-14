@@ -1,14 +1,16 @@
 import os
 import argparse
 import json
+import datasets
 from datasets import load_dataset, DatasetDict, Dataset
 from typing import List, Dict, Optional, Union, Literal
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, DataCollatorForLanguageModeling, BitsAndBytesConfig
 import matplotlib.pyplot as plt
 from src import *
-from dataclasses import dataclass
 import re
 from tqdm import tqdm
 from dataclasses import dataclass, asdict
+from peft import LoraConfig, get_peft_model
 
 def get_args():
     
@@ -27,22 +29,30 @@ def get_args():
     parser.add_argument('--topk', default=10, type=int)
     parser.add_argument('--max_new_tokens', default=300, type=int)
     parser.add_argument('--stop_criteria', default=['Q:', '\n\nQ:'], type=list)
-    parser.add_argument('--answer_span_model', default='huggingface-course/bert-finetuned-squad', type=str)
+    parser.add_argument('--bert', action='store_true')
     parser.add_argument('--add_shot', default='', type=str)
-    parser.add_argument('--pattern', default=r'-?\b\d+(?:[,.]\d{1,10})*\b', type=str)
-
+    parser.add_argument('--pattern', default=r'-?\d+\.?\d*', type=str)
+    parser.add_argument('--dtype', default='float16', type=str)
+    parser.add_argument('--max_model_len', default=2048, type=int)
+    
     # [GENERATE DATASET]
 
-    parser.add_argument('--datasets', nargs='+', choices=['gsm8k', 'multiarith', 'svamp', 'last_letters', 'single_eq', 'addsub'])
+    parser.add_argument('--dataset', nargs='+', choices=['gsm8k', 'multiarith', 'svamp', 'last', 'singleq', 'addsub', 'coin'])
     parser.add_argument('--dataset_path', default='./dataset', type=str)
-    parser.add_argument('--log_path', default='./log', type=str)
-    parser.add_argument('--plot_path', default='./plot', type=str)
+    parser.add_argument('--log_path', default='/content/log', type=str)
+    parser.add_argument('--plot_path', default='/content/plot', type=str)
 
     parser.add_argument('--save_log', action='store_true')
     parser.add_argument('--save_plot', action='store_true')
-    
+    parser.add_argument('--dataset_type', default='aritmetic', type=str)
+    parser.add_argument('--log_outputs_path', type=str)
+    parser.add_argument('--leco_name', type=str)
+    parser.add_argument('--cot_name', type=str)
+
     # [FINE TUNING]
 
+    parser.add_argument('--output_ft', default='/content/ft', type=str)
+    parser.add_argument('--logging_steps', default=25, type=int)
 
     args = parser.parse_args()
     
@@ -52,24 +62,28 @@ def print_output(prompt, cot_outputs, leco_outputs):
     print('-'*100)
     print(f'Your prompt: {prompt}\n')
 
-    print('\tCoT-Decoding Paths:\n')
+    print('CoT-Decoding Paths:\n')
 
     for path in cot_outputs.paths:
  
-        print(f"\t\t(k={path.num_path}) Reasoning Text: {path.reasoning_text} (Score: {path.score:.4f}) (Span: {path.answer_span})\n")
-        print('- '*80)
+        print(f"\t(k={path.num_path}) Reasoning Text: {path.reasoning_text} (Score: {path.score:.4f}) (Span: {path.answer_span})")
         
-    print('\tLeCo* Paths:\n')
+    print('LeCo* Paths:\n')
 
     for path in leco_outputs.paths:
  
-        print(f"\t\t(k={path.num_path}) Reasoning Text: {path.reasoning_text} (Score: {path.score:.4f})\n")
-        print('- '*80)
+        print(f"\t(k={path.num_path}) Reasoning Text: {path.reasoning_text} (Score: {path.score:.4f})")
 
-    print(leco_outputs)
+def convert_to_string(example):
+    example['answer'] = str(example['answer'])
+    return example
 
 def concatenate_fields(example):
     example['question'] = example['Body'] + '. ' + example['Question']
+    return example
+
+def remove_characters(example):
+    example['question'] = example['question'][2:]  # Remove o primeiro caractere
     return example
 
 def load_datasets(datasets: List[str]):
@@ -83,12 +97,33 @@ def load_datasets(datasets: List[str]):
         elif dataset_name == 'multiarith':
             dataset = load_dataset('ChilleD/MultiArith')
             dataset = dataset.rename_column('final_ans', 'answer')
+            dataset = dataset.map(convert_to_string)
             loaded_datasets['multiarith'] = dataset
         elif dataset_name == 'svamp':
             dataset = load_dataset('ChilleD/SVAMP')
             dataset = dataset.rename_column('Answer', 'answer')
             dataset = dataset.map(concatenate_fields)
             loaded_datasets['svamp'] = dataset
+        elif dataset_name == 'singleq':
+            dataset = load_dataset("allenai/lila", "singleq")
+            dataset = dataset.rename_column('input', 'question')
+            dataset = dataset.rename_column('output_answer', 'answer')
+            loaded_datasets['singleq'] = dataset
+        elif dataset_name == 'addsub':
+            dataset = load_dataset("allenai/lila", "addsub")
+            dataset = dataset.rename_column('input', 'question')
+            dataset = dataset.rename_column('output_answer', 'answer')
+            loaded_datasets['addsub'] = dataset
+        elif dataset_name == 'coin':
+            dataset = load_dataset("skrishna/coin_flip")
+            dataset = dataset.rename_column('inputs', 'question')
+            dataset = dataset.rename_column('targets', 'answer')
+            dataset = dataset.map(remove_characters)
+            loaded_datasets['coin'] = {split: dataset.select(range(100)) for split, dataset in dataset.items()}
+
+        elif dataset_name == 'last':
+            loaded_datasets['last'] = load_dataset("ChilleD/LastLetterConcat")
+
 
     
     return loaded_datasets
@@ -126,8 +161,8 @@ def extract_cot_paths_from_dataset(dataset: DatasetDict,
         cot_paths = cot_decoding.calculate_score(prompt, topk_tokens, outputs)
         diver_paths = leco_decoding.calculate_score(prompt, topk_tokens, outputs)
         
-        log_outputs['cot_decoding'][i] = asdict(cot_paths)['paths']
-        log_outputs['leco*'][i] = asdict(diver_paths)['paths']
+        log_outputs['cot_decoding'][f'idx={i}:{prompt}'] = asdict(cot_paths)['paths']
+        log_outputs['leco*'][f'idx={i}:{prompt}'] = asdict(diver_paths)['paths']
 
     return log_outputs
 
@@ -207,6 +242,73 @@ def print_evaluations(evaluations: List, dataset_name: str):
     print(f'\tLeCO*: {evaluations[-1]["LeCo*"]:.4f}')
     print(f'\tCoT-Decoding (agg): {evaluations[-1]["CoT-Decoding (agg)"]:.4f}')
 
+def load_cot_dataset(args):
+
+    log_outputs = {'cot_decoding': {}, 'leco*': {}}
+
+    with open(f'{args.log_path}/{args.dataset[0]}_cot_decoding.json', 'r') as f:
+        log_outputs['cot_decoding'] = json.load(f)
+    
+    with open(f'{args.log_path}/{args.dataset[0]}_leco_decoding.json', 'r') as f:
+        log_outputs['leco_decoding'] = json.load(f)
+
+    return log_outputs
+
+def prepare_finetuning(args, log_outputs):
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer.pad_token = tokenizer.unk_token
+
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type='nf4',
+        bnb_4bit_use_double_quant=False,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(args.model, device_map="auto", quantization_config=quantization_config)
+
+    loraconfig = LORAConfig()
+
+    '''
+    lora_config = LORAConfig(
+        rank=loraconfig.rank,
+        lora_alpha=loraconfig.lora_alpha,
+        target_modules=loraconfig.target_modules,
+        lora_dropout=loraconfig.lora_dropout,
+        bias=loraconfig.bias,
+        task_type=loraconfig.task_type,
+        use_rslora=loraconfig.use_rslora,
+    )
+    '''
+    
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=['q_proj', 'k_proj', 'v_proj', 'dense', 'fc1', 'fc2'],
+        lora_dropout=0.1,
+        bias='none',
+        task_type='CAUSAL_LM',
+        #modules_to_save=['lm_head'],
+        use_rslora=True,
+    )
+    model = get_peft_model(model, lora_config)
+
+    ft_dataset = {'question': [], 'reasoning': []}
+
+    pattern = r"idx=\d+:"
+
+    for key in log_outputs['cot_decoding'].keys():
+        match = re.search(pattern, key)
+        start_pos = match.end()
+        ft_dataset['question'].append(key[start_pos:])
+
+    ft_dataset['reasoning'] = best_score(log_outputs['cot_decoding'], args.topk)
+
+    dataset = datasets.Dataset.from_dict(ft_dataset)
+
+    return model, tokenizer, dataset
+
 def save_plot(evaluations: Dict, title: str, plot_path: str):
     
     components = ['Greedy Decoding', 'CoT-Decoding (max)', 'LeCo*', 'CoT-Decoding (agg)']
@@ -228,5 +330,24 @@ def save_plot(evaluations: Dict, title: str, plot_path: str):
     plt.grid(True)
     plt.tight_layout()
 
-    plt.savefig(dataset + '.png')
+    plt.savefig(plot_path + '.png')
+
+def plot_loss(log_history):
+    
+    losses = []
+    steps = []
+    
+    for log in log_history:
+        if 'loss' in log:
+            losses.append(log['loss'])
+            steps.append(log['step'])
+
+    # Plota a perda ao longo dos passos
+    plt.figure(figsize=(10, 5))
+    plt.plot(steps, losses, marker='o', linestyle='-', color='b')
+    plt.xlabel('Step')
+    plt.ylabel('Loss')
+    plt.title('Training Loss Over Steps')
+    plt.grid(True)
+    plt.savefig(plot_path + '_loss.png')
     

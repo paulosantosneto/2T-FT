@@ -1,3 +1,4 @@
+
 import re
 import torch
 import numpy as np
@@ -92,7 +93,7 @@ class GeneratePaths():
     
     def format_prompt(self, raw_prompt: str) -> str:
         # Format the prompt to match the expected question-answer template.
-        return f'Q:{raw_prompt}\nA:{self.prompt}'
+        return f'Q:{raw_prompt}(yes or no)\nA:{self.prompt}'
 
 
 class LeCoDecoding():
@@ -166,7 +167,8 @@ class CoTDecoding():
     def __init__(self, answer_span_model: LLM=None,
                        pattern: str=r'-?\b\d+(?:[,.]\d{1,10})*\b',
                        tokenizer: AutoTokenizer=None,
-                       prompt: str=''):
+                       prompt: str='',
+                       dataset_type: str = 'aritmetic'):
         '''
         Initialize the CoTDecoding class with the given parameters.
 
@@ -178,7 +180,8 @@ class CoTDecoding():
         self.answer_span_model = answer_span_model
         self.pattern = pattern
         self.tokenizer = tokenizer
-    
+        self.dataset_type = dataset_type
+
     def calculate_score(self, prompt, topk_tokens, outputs):
         '''
         Calculate the score for each path based on answer span probabilities.
@@ -205,7 +208,12 @@ class CoTDecoding():
                 answer_span = [self.answer_span_model(question=prompt, context=reasoning)['answer'].strip()]
             else:
                 # Use regex to find the answer span.
-                answer_span = re.findall(self.pattern, reasoning)
+                if self.dataset_type == 'aritmetic':
+                    answer_span = re.findall(self.pattern, reasoning)
+                elif self.dataset_type == 'symbolic':
+                    answer_span = ''
+                elif self.dataset_type == 'commonsense':
+                    answer_span = ''
             
             score = 0
             
@@ -224,6 +232,8 @@ class CoTDecoding():
 
                 token_id = [encode.input_ids[idx] for idx in idx_answer]
 
+                output.outputs[0].logprobs.insert(0, topk_tokens['logprobs'][k])
+                
                 # Filter log probabilities for tokens in the answer span.
                 filtered_answer = [output for i, output in enumerate(output.outputs[0].logprobs) if i in idx_answer]
 

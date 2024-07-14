@@ -1,5 +1,6 @@
 import torch
 import re
+import json
 from src import *
 from vllm import LLM, SamplingParams
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
@@ -13,8 +14,13 @@ def configurate_method(args):
 
     torch.manual_seed(args.seed)
 
-    model = LLM(model=args.model, seed=args.seed)
+    model = LLM(model=args.model, seed=args.seed, dtype=args.dtype, max_model_len=args.max_model_len)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
+
+    if args.add_shot == '':
+        print('ZERO-SHOT: OK')
+    else:
+        print(f'ZERO-SHOT-COT "{args.add_shot}" OK')
         
     generator = GeneratePaths(model=model, 
                               topk=args.topk, 
@@ -22,9 +28,12 @@ def configurate_method(args):
                               stop=args.stop_criteria,
                               prompt=args.add_shot)
     
-    answer_span_model = None
-    if args.answer_span_model:
-        answer_span_model = pipeline('question-answering', model=args.answer_span_model)
+    if args.bert:
+        print('ANSWER SPAN WITH BERT: OK')
+        answer_span_model = pipeline('question-answering', model='huggingface-course/bert-finetuned-squad')
+    else:
+        print('FIXED ANSWER SPAN: OK')
+        answer_span_model = None
 
     cot_decoding = CoTDecoding(answer_span_model=answer_span_model,
                                pattern=args.pattern,
@@ -46,27 +55,35 @@ def simple_demo(generator, cot_decoding, leco_decoding, args):
 def evaluating_decoding_methods(args):
 
     generator, cot_decoding, leco_decoding, tokenizer = configurate_method(args)
-    datasets = load_datasets(args.datasets)
-
-    print(datasets.keys())
+    datasets = load_datasets(args.dataset)
     
     for dataset in datasets:
-        log_outputs = extract_cot_paths_from_dataset(dataset=datasets[dataset],
-                                           dataset_name=dataset,
-                                           max_samples=datasets[dataset]['test'].num_rows,
-                                           #max_samples=10,
-                                           field='test',
-                                           prompt_key='question',
-                                           generator=generator,
-                                           cot_decoding=cot_decoding,
-                                           leco_decoding=leco_decoding        
-        )
+
+        if args.log_outputs_path:
+            log_outputs = {'cot_decoding': {}, 'leco*': {}}
+            log_outputs['cot_decoding'] = json.load(args.log_outputs_path + '/' + args.cot_name)
+            log_outputs['leco*'] = json.load(args.load_outputs_path + '/' + args.leco_name)
+        else:
+            log_outputs = extract_cot_paths_from_dataset(dataset=datasets[dataset],
+                                            dataset_name=dataset,
+                                            max_samples=datasets[dataset]['test'].num_rows,
+                                            #max_samples=50,
+                                            field='test',
+                                            prompt_key='question',
+                                            generator=generator,
+                                            cot_decoding=cot_decoding,
+                                            leco_decoding=leco_decoding        
+            )
 
         if args.save_log:
             save_logs(log_outputs, dataset, args.log_path)
         
-        ground_truth = [re.findall(args.pattern, string)[-1] for string in datasets[dataset]['test']['answer']]
-        
+        if args.dataset_type == 'aritmetic':
+            ground_truth = [re.findall(args.pattern, string)[-1] for string in datasets[dataset]['test']['answer']]
+        elif args.dataset_type == 'symbolic':
+            ground_truth = datasets[dataset]['test']['answer']
+
+        print(ground_truth)
         evaluations = evaluating(log_outputs=log_outputs,
                                  ground_truth=ground_truth,
                                  pattern=args.pattern,
@@ -78,7 +95,22 @@ def evaluating_decoding_methods(args):
             save_plot(evaluations, f'Exatch Match Evaluation - {dataset}', dataset)
         
         print_evaluations(evaluations, dataset)
-        
+
+def finetuning_cot(args):
+
+    log_outputs = load_cot_dataset(args)
+
+    model, tokenizer, dataset = prepare_finetuning(args, log_outputs)
+
+    train_dataset = prepare_dataset(dataset, tokenizer)
+
+    data_collator = CustomDataCollator(tokenizer)
+
+    model, loss_history = run_trainer(train_dataset, model, data_collator, args)
+
+    if args.save_plot:
+        plot_loss(loss_history)
+   
 if __name__ == "__main__":
 
     args = get_args()
@@ -86,5 +118,8 @@ if __name__ == "__main__":
     if args.choice == 'demo':
         generator, cot_decoding, leco_decoding, tokenizer = configurate_method(args)
         cot_paths, leco_paths = simple_demo(generator, cot_decoding, leco_decoding, args)
+        print_output(args.demo_prompt, cot_paths, leco_paths)
     elif args.choice == 'evaluating':
         evaluating_decoding_methods(args)
+    elif args.choice == 'finetuning':
+        finetuning_cot(args)
