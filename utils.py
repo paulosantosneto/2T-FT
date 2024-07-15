@@ -41,7 +41,7 @@ def get_args():
     parser.add_argument('--dataset_path', default='./dataset', type=str)
     parser.add_argument('--log_path', default='/content/log', type=str)
     parser.add_argument('--plot_path', default='/content/plot', type=str)
-
+    parser.add_argument('--field', default='test', type=str)
     parser.add_argument('--save_log', action='store_true')
     parser.add_argument('--save_plot', action='store_true')
     parser.add_argument('--dataset_type', default='aritmetic', type=str)
