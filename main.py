@@ -64,10 +64,15 @@ def evaluating_decoding_methods(args):
             log_outputs['cot_decoding'] = json.load(args.log_outputs_path + '/' + args.cot_name)
             log_outputs['leco*'] = json.load(args.load_outputs_path + '/' + args.leco_name)
         else:
+
+            if args.max_samples == -1:
+                max_samples = datasets[dataset][args.field].num_rows
+            else:
+                max_samples = args.max_samples
+
             log_outputs = extract_cot_paths_from_dataset(dataset=datasets[dataset],
                                             dataset_name=dataset,
-                                            max_samples=datasets[dataset][args.field].num_rows,
-                                            #max_samples=50,
+                                            max_samples=max_samples,
                                             field=args.field,
                                             prompt_key='question',
                                             generator=generator,
