@@ -84,11 +84,10 @@ def evaluating_decoding_methods(args):
             save_logs(log_outputs, dataset, args.log_path)
         
         if args.dataset_type == 'aritmetic':
-            ground_truth = [re.findall(args.pattern, string)[-1] for string in datasets[dataset][args.field]['answer']]
+            ground_truth = [re.findall(args.pattern, string)[-1] for string in datasets[dataset][args.field]['answer']][:max_samples]
         elif args.dataset_type == 'symbolic':
-            ground_truth = datasets[dataset][args.field]['answer']
+            ground_truth = datasets[dataset][args.field]['answer'][:max_samples]
 
-        print(ground_truth)
         evaluations = evaluating(log_outputs=log_outputs,
                                  ground_truth=ground_truth,
                                  pattern=args.pattern,
