@@ -48,7 +48,7 @@ def get_args():
     parser.add_argument('--log_outputs_path', type=str)
     parser.add_argument('--leco_name', type=str)
     parser.add_argument('--cot_name', type=str)
-    parser.add_argument('--max_samples', int=-1, type=int)
+    parser.add_argument('--max_samples', default=-1, type=int)
     # [FINE TUNING]
 
     parser.add_argument('--output_ft', default='/content/ft', type=str)
