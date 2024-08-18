@@ -1,4 +1,4 @@
-# Finetuning Implicit CoT
+# 2T-FT: Two-Token Fine-Tuning Improves Zero-Shot Performance With Minimal Training Data
 
 ## Installation
 
