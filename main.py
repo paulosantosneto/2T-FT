@@ -74,6 +74,7 @@ def evaluating_decoding_methods(args):
                 init_samples = 0
             else:
                 init_samples = args.init_samples
+                
 
             log_outputs = extract_cot_paths_from_dataset(dataset=datasets[dataset],
                                             dataset_name=dataset,
