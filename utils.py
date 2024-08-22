@@ -49,6 +49,8 @@ def get_args():
     parser.add_argument('--leco_name', type=str)
     parser.add_argument('--cot_name', type=str)
     parser.add_argument('--max_samples', default=-1, type=int)
+    parser.add_argument('--init_samples', default=-1, type=int)
+
     # [FINE TUNING]
 
     parser.add_argument('--output_ft', default='/content/ft', type=str)
@@ -142,6 +144,7 @@ def extract_cot_paths_from_dataset(dataset: DatasetDict,
                                       cot_decoding: CoTDecoding,
                                       leco_decoding: LeCoDecoding,
                                       max_samples: int,
+                                      init_samples: int,
                                       prompt_key: str,
                                       field: Optional[Literal['train', 'val', 'test']]):
 
@@ -151,7 +154,7 @@ def extract_cot_paths_from_dataset(dataset: DatasetDict,
         raise ValueError("Field must be one of 'train', 'val', or 'test'.")
 
     
-    prompts = dataset[prompt_key][:max_samples]
+    prompts = dataset[prompt_key][init_samples:max_samples]
     
     log_outputs = {'cot_decoding': {}, 'leco*': {}}
     

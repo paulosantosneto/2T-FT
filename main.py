@@ -69,10 +69,16 @@ def evaluating_decoding_methods(args):
                 max_samples = datasets[dataset][args.field].num_rows
             else:
                 max_samples = args.max_samples
+            
+            if args.init_samples == -1:
+                init_samples = 0
+            else:
+                init_samples = args.init_samples
 
             log_outputs = extract_cot_paths_from_dataset(dataset=datasets[dataset],
                                             dataset_name=dataset,
                                             max_samples=max_samples,
+                                            init_samples=init_samples,
                                             field=args.field,
                                             prompt_key='question',
                                             generator=generator,
@@ -83,10 +89,7 @@ def evaluating_decoding_methods(args):
         if args.save_log:
             save_logs(log_outputs, dataset, args.log_path)
         
-        if args.dataset_type == 'aritmetic':
-            ground_truth = [re.findall(args.pattern, string)[-1] for string in datasets[dataset][args.field]['answer']][:max_samples]
-        elif args.dataset_type == 'symbolic':
-            ground_truth = datasets[dataset][args.field]['answer'][:max_samples]
+        ground_truth = [re.findall(args.pattern, string)[-1] for string in datasets[dataset][args.field]['answer']][init_samples:max_samples]
 
         evaluations = evaluating(log_outputs=log_outputs,
                                  ground_truth=ground_truth,
