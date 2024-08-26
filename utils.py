@@ -221,14 +221,14 @@ def evaluating(log_outputs, ground_truth, pattern: str, num_paths: int, tokenize
     
     evaluations = []
     
-    for k in range(1, num_paths):
+    for k in range(0, num_paths):
         
         log_outputs = extract_exact_match(log_outputs, pattern)
         
         greedy_decoding_acc = exact_match(greedy_decoding(log_outputs['cot_decoding']), ground_truth)                       
-        cot_decoding_max_acc = exact_match(best_score(log_outputs['cot_decoding'], k=k), ground_truth)
-        cot_decoding_agg_acc = exact_match(self_consistency(log_outputs['cot_decoding'], k=k), ground_truth)
-        leco_acc = exact_match(best_score(log_outputs['leco*'], k=k), ground_truth)
+        cot_decoding_max_acc = exact_match(best_score(log_outputs['cot_decoding'], k=k+1), ground_truth)
+        cot_decoding_agg_acc = exact_match(self_consistency(log_outputs['cot_decoding'], k=k+1), ground_truth)
+        leco_acc = exact_match(best_score(log_outputs['leco*'], k=k+1), ground_truth)
         
         evaluations.append({'Greedy Decoding': greedy_decoding_acc,
                             'CoT-Decoding (max)': cot_decoding_max_acc,
